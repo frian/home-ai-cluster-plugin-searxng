@@ -2,7 +2,6 @@
 
 This separately installed, explicitly selected external-information acquisition
 plugin implements [Home AI Cluster RFC-0079](https://github.com/frian/home-ai-cluster/blob/main/RFC/RFC-0079-fixed-loopback-searxng-acquisition-plugin.md).
-It is development software and has not yet been released.
 
 It assumes an operator-owned SearXNG service is already running at
 `127.0.0.1:8888` with JSON output enabled. The plugin does not install,
@@ -42,14 +41,20 @@ directory, cause filesystem scanning, or add a HAC core dependency. Explicit
 `searxng` selection is still required; installation alone does not change
 ordinary HAC startup or requests.
 
-The exact command depends on how HAC runs. These are current development
-examples from a sibling workspace containing `home-ai-cluster/` and
-`home-ai-cluster-plugin-searxng/`.
+The exact command depends on how HAC runs.
 
 ### HAC repository checkout
 
 When HAC runs from its `.venv`, install this distribution into that exact
 environment:
+
+```sh
+uv pip install \
+  --python ./home-ai-cluster/.venv/bin/python \
+  home-ai-cluster-plugin-searxng
+```
+
+For development from a sibling workspace, install the local checkout instead:
 
 ```sh
 uv pip install --python ./home-ai-cluster/.venv/bin/python ./home-ai-cluster-plugin-searxng
@@ -60,13 +65,15 @@ the HAC repository tree.
 
 ### HAC as an isolated uv tool
 
-The currently supported `uv tool install --with` form can create the HAC tool
-environment with the local unreleased plugin requirement:
+Use `uv tool install --with` to create the HAC tool environment with the
+published plugin:
+
+```sh
+uv tool install --with home-ai-cluster-plugin-searxng home-ai-cluster
+```
+
+For development from a sibling workspace, use the local checkout instead:
 
 ```sh
 uv tool install --with ./home-ai-cluster-plugin-searxng ./home-ai-cluster
 ```
-
-The plugin is development software and is not published on PyPI. After a future
-release, the same environment rule will apply: install the plugin distribution
-where `hac` runs.
