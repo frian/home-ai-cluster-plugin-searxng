@@ -1,6 +1,6 @@
 [project]
 name = "home-ai-cluster-plugin-searxng"
-version = "0.1.0"
+version = "0.2.0.dev0"
 description = "Fixed-loopback SearXNG external-information acquisition plugin for Home AI Cluster."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
