@@ -1,0 +1,198 @@
+name: Publish stable release to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Annotated stable release tag in the form vX.Y.Z
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Build and validate stable distributions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify main dispatch ref
+        run: test "$GITHUB_REF" = "refs/heads/main"
+
+      - name: Validate stable tag input
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: '[[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify annotated stable tag and source identity
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          tag_object="$(git rev-parse "refs/tags/$RELEASE_TAG")"
+          test "$(git cat-file -t "$tag_object")" = tag
+          tagged_commit="$(git rev-parse "$RELEASE_TAG^{}")"
+          test "$(git rev-parse HEAD)" = "$tagged_commit"
+          git cat-file -e "$GITHUB_SHA^{commit}"
+          git merge-base --is-ancestor "$tagged_commit" "$GITHUB_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Verify package version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          expected_version="${RELEASE_TAG#v}"
+          python - "$expected_version" <<'PY'
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          expected_version = sys.argv[1]
+          project = tomllib.loads(Path("pyproject.toml").read_text())
+          actual_version = project["project"]["version"]
+          if actual_version != expected_version:
+              raise SystemExit(
+                  f"pyproject.toml version {actual_version!r} does not match "
+                  f"{expected_version!r}"
+              )
+          PY
+
+      - name: Install release build tools
+        run: python -m pip install --upgrade build twine
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Verify expected distributions
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          expected_version="${RELEASE_TAG#v}"
+          expected_files="$(printf '%s\n' \
+            "home_ai_cluster_plugin_searxng-${expected_version}-py3-none-any.whl" \
+            "home_ai_cluster_plugin_searxng-${expected_version}.tar.gz" | LC_ALL=C sort)"
+          actual_files="$(find dist -type f -printf '%P\n' | LC_ALL=C sort)"
+          test "$actual_files" = "$expected_files"
+
+      - name: Validate distributions
+        run: python -m twine check dist/*
+
+      - name: Verify distribution metadata versions
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          expected_version="${RELEASE_TAG#v}"
+          python - "$expected_version" <<'PY'
+          import sys
+          import tarfile
+          import zipfile
+          from email.parser import BytesParser
+          from pathlib import Path
+
+          expected_version = sys.argv[1]
+          basename = "home_ai_cluster_plugin_searxng"
+          wheel_path = Path(
+              f"dist/{basename}-{expected_version}-py3-none-any.whl"
+          )
+          sdist_path = Path(f"dist/{basename}-{expected_version}.tar.gz")
+
+          with zipfile.ZipFile(wheel_path) as wheel:
+              names = [
+                  name
+                  for name in wheel.namelist()
+                  if name.endswith(".dist-info/METADATA")
+              ]
+              if len(names) != 1:
+                  raise SystemExit("wheel must contain exactly one METADATA file")
+              wheel_metadata = BytesParser().parsebytes(wheel.read(names[0]))
+
+          with tarfile.open(sdist_path) as sdist:
+              members = [
+                  member
+                  for member in sdist.getmembers()
+                  if member.name.endswith("/PKG-INFO")
+              ]
+              if len(members) != 1:
+                  raise SystemExit("sdist must contain exactly one PKG-INFO file")
+              sdist_metadata = BytesParser().parsebytes(
+                  sdist.extractfile(members[0]).read()
+              )
+
+          for name, metadata in (
+              ("wheel", wheel_metadata),
+              ("sdist", sdist_metadata),
+          ):
+              if metadata["Version"] != expected_version:
+                  raise SystemExit(
+                      f"{name} metadata version {metadata['Version']!r} does not "
+                      f"match {expected_version!r}"
+                  )
+          PY
+
+      - name: Smoke test installed wheel entry point
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          expected_version="${RELEASE_TAG#v}"
+          venv_dir="$(mktemp -d)"
+          trap 'rm -rf "$venv_dir"' EXIT
+          python -m venv "$venv_dir"
+          "$venv_dir/bin/python" -m pip install \
+            "$GITHUB_WORKSPACE/dist/home_ai_cluster_plugin_searxng-${expected_version}-py3-none-any.whl"
+          "$venv_dir/bin/python" - <<'PY'
+          import inspect
+          from importlib import metadata
+
+          group = "home_ai_cluster.external_information_acquisition.v1"
+          entries = [
+              entry
+              for entry in metadata.entry_points().select(group=group)
+              if entry.name == "searxng"
+          ]
+          if len(entries) != 1:
+              raise SystemExit("expected exactly one searxng entry point")
+          entry = entries[0]
+          if entry.value != "home_ai_cluster_plugin_searxng.plugin:acquire":
+              raise SystemExit("unexpected searxng entry point value")
+          loaded = entry.load()
+          if not callable(loaded) or not inspect.iscoroutinefunction(loaded):
+              raise SystemExit("searxng entry point must load an async callable")
+          PY
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish distributions to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
