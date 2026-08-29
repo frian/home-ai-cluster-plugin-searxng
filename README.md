@@ -198,7 +198,7 @@ uv tool install --force --no-cache \
 
 SearXNG must still be running at `127.0.0.1:8888`, and the separately packaged
 plugin must be installed in the same environment as `hac`. Start the ordinary
-HAC application separately; it uses its default loopback port, `127.0.0.1:8000`,
+HAC application separately; it uses its default loopback port, `127.0.0.1:25042`,
 not port 8888.
 
 Terminal 1:
