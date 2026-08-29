@@ -74,10 +74,14 @@ echo '. /usr/local/searxng/searx-pyenv/bin/activate' >> /usr/local/searxng/.prof
 exit
 
 sudo -H -u searxng -i
+command -v python && python --version
 cd /usr/local/searxng/searxng-src
 pip install -U pip setuptools wheel pyyaml msgspec typing-extensions pybind11
 pip install --use-pep517 --no-build-isolation -e .
 ```
+
+Before installing packages, `python` should resolve to the SearXNG virtual
+environment under `/usr/local/searxng/searx-pyenv/`.
 
 ### 3. Configure the fixed local contract
 
