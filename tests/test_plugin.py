@@ -329,6 +329,88 @@ def test_invalid_json_or_structure_fails(
         run(plugin.acquire("query"))
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize(
+    ("location", "body_prefix", "body_suffix"),
+    [
+        (
+            "additional result attribute",
+            '{"results":[{"title":"title","url":"https://example.invalid/",'
+            '"content":"content","score":',
+            "}]}",
+        ),
+        (
+            "top-level metadata",
+            '{"results":[{"title":"title","url":"https://example.invalid/",'
+            '"content":"content"}],"metadata":{"score":',
+            "}}",
+        ),
+        (
+            "nested ignored metadata",
+            '{"results":[{"title":"title","url":"https://example.invalid/",'
+            '"content":"content"}],"metadata":{"nested":{"score":',
+            "}}}",
+        ),
+    ],
+)
+def test_non_standard_json_constants_in_ignored_content_fail(
+    monkeypatch: pytest.MonkeyPatch,
+    constant: str,
+    location: str,
+    body_prefix: str,
+    body_suffix: str,
+) -> None:
+    body = (body_prefix + constant + body_suffix).encode()
+    install_transport(monkeypatch, lambda request: httpx.Response(200, content=body))
+    with pytest.raises(plugin.AcquisitionFailure):
+        run(plugin.acquire("query"))
+
+
+def test_valid_json_literals_and_values_are_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = b"""{
+        "results": [{
+            "title": "NaN",
+            "url": "https://example.invalid/Infinity",
+            "content": "-Infinity",
+            "score": 1.5
+        }],
+        "metadata": {"null": null, "true": true, "false": false, "number": 2}
+    }"""
+    install_transport(monkeypatch, lambda request: httpx.Response(200, content=body))
+    assert run(plugin.acquire("query")) == [
+        {
+            "title": "NaN",
+            "url": "https://example.invalid/Infinity",
+            "content": "-Infinity",
+        }
+    ]
+
+
+def test_non_standard_json_constant_failure_is_privacy_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = "private query"
+    sensitive_url = "https://sensitive.invalid/path"
+    sensitive_content = "private response"
+    body = (
+        '{"results":[{"title":"title","url":"'
+        + sensitive_url
+        + '","content":"'
+        + sensitive_content
+        + '","score":NaN}]}'
+    ).encode()
+    install_transport(monkeypatch, lambda request: httpx.Response(200, content=body))
+    with pytest.raises(plugin.AcquisitionFailure) as failure:
+        run(plugin.acquire(query))
+    message = str(failure.value)
+    assert message == "external information acquisition failed"
+    assert query not in message
+    assert sensitive_url not in message
+    assert sensitive_content not in message
+
+
 def test_normalisation_skips_malformed_preserves_values_and_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
