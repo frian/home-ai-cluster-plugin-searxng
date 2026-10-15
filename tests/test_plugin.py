@@ -25,9 +25,21 @@ def install_transport(
     observations: list[dict[str, object]] = []
     original_client = httpx.AsyncClient
 
+    def transport_handler(request: httpx.Request) -> httpx.Response:
+        response = handler(request)
+        if response.is_stream_consumed:
+            return httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                stream=ChunkedStream([response.content]),
+            )
+        return response
+
     def client_factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
         observations.append(dict(kwargs))
-        return original_client(*args, transport=httpx.MockTransport(handler), **kwargs)
+        return original_client(
+            *args, transport=httpx.MockTransport(transport_handler), **kwargs
+        )
 
     monkeypatch.setattr(plugin.httpx, "AsyncClient", client_factory)
     return observations
@@ -79,6 +91,7 @@ def test_exact_single_form_post_preserves_query_and_client_policy(
     assert request.method == "POST"
     assert str(request.url) == "http://127.0.0.1:8888/search"
     assert request.headers["content-type"] == "application/x-www-form-urlencoded"
+    assert request.headers["accept-encoding"] == "identity"
     assert request.content == b"q=++%21images+exact+%2Bsyntax++&format=json"
     assert observations == [
         {
@@ -160,7 +173,7 @@ class ChunkedStream(httpx.AsyncByteStream):
         pass
 
 
-def test_incremental_decoded_size_limit_precedes_json_parsing(
+def test_incremental_raw_size_limit_precedes_json_parsing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def parsing_must_not_run(_: object) -> object:
@@ -178,22 +191,125 @@ def test_incremental_decoded_size_limit_precedes_json_parsing(
         run(plugin.acquire("secret query"))
 
 
-def test_compressed_response_limit_uses_decoded_bytes(
+def test_exact_raw_response_size_limit_is_accepted() -> None:
+    body = b"x" * plugin._MAX_DECODED_RESPONSE_BYTES
+    response = httpx.Response(200, stream=ChunkedStream([body[:1], body[1:]]))
+    assert run(plugin._read_bounded_raw_body(response)) == body
+
+
+def test_compressed_response_is_rejected_before_body_consumption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    decoded = b"{" + (b"x" * plugin._MAX_DECODED_RESPONSE_BYTES)
-    compressed = gzip.compress(decoded)
-    assert len(compressed) < plugin._MAX_DECODED_RESPONSE_BYTES
+    class UnreadableStream(httpx.AsyncByteStream):
+        async def __aiter__(self):  # type: ignore[override]
+            raise AssertionError("compressed response body must not be consumed")
+            yield b""
+
+        async def aclose(self) -> None:
+            pass
+
     install_transport(
         monkeypatch,
         lambda request: httpx.Response(
             200,
             headers={"content-encoding": "gzip"},
-            content=compressed,
+            stream=UnreadableStream(),
         ),
     )
     with pytest.raises(plugin.AcquisitionFailure):
         run(plugin.acquire("query"))
+
+
+def test_gzip_oversized_decoding_regression_is_rejected_without_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decoded = b"{" + (b"x" * (2 * plugin._MAX_DECODED_RESPONSE_BYTES))
+    compressed = gzip.compress(decoded)
+    assert len(compressed) < plugin._MAX_DECODED_RESPONSE_BYTES
+
+    class UnreadableStream(httpx.AsyncByteStream):
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+
+        async def __aiter__(self):  # type: ignore[override]
+            raise AssertionError("gzip response body must not be consumed")
+            yield b""
+
+        async def aclose(self) -> None:
+            pass
+
+    install_transport(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200,
+            headers={"content-encoding": "gzip"},
+            stream=UnreadableStream(compressed),
+        ),
+    )
+    with pytest.raises(plugin.AcquisitionFailure):
+        run(plugin.acquire("query"))
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"content-encoding": "deflate"},
+        {"content-encoding": "br"},
+        {"content-encoding": "unknown"},
+        {"content-encoding": "gzip "},
+        {"content-encoding": "gzip, identity"},
+        {"content-encoding": "identity, gzip"},
+        {"content-encoding": "identity, identity"},
+        {"content-encoding": "identity\t, gzip"},
+        {"content-encoding": "gzip, deflate"},
+        [("content-encoding", "identity"), ("content-encoding", "identity")],
+    ],
+)
+def test_unsupported_or_ambiguous_content_encoding_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, headers: object
+) -> None:
+    install_transport(
+        monkeypatch,
+        lambda request: httpx.Response(200, headers=headers, content=b"{}"),  # type: ignore[arg-type]
+    )
+    with pytest.raises(plugin.AcquisitionFailure):
+        run(plugin.acquire("query"))
+
+
+@pytest.mark.parametrize(
+    "encoding", [None, "identity", "IDENTITY", "identity ", " identity", "identity\t"]
+)
+def test_absent_or_identity_content_encoding_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, encoding: str | None
+) -> None:
+    headers = {} if encoding is None else {"content-encoding": encoding}
+    install_transport(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200, headers=headers, json={"results": [usable_result()]}
+        ),
+    )
+    assert run(plugin.acquire("query")) == [usable_result()]
+
+
+def test_raw_stream_read_failure_is_a_controlled_acquisition_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):  # type: ignore[override]
+            raise httpx.ReadError("private transport detail")
+            yield b""
+
+        async def aclose(self) -> None:
+            pass
+
+    install_transport(
+        monkeypatch,
+        lambda request: httpx.Response(200, stream=FailingStream()),
+    )
+    with pytest.raises(plugin.AcquisitionFailure) as failure:
+        run(plugin.acquire("private query"))
+    assert str(failure.value) == "external information acquisition failed"
 
 
 @pytest.mark.parametrize(
