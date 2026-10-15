@@ -43,7 +43,12 @@ async def acquire(query: str) -> list[dict[str, str]]:
                     _validate_content_encoding(response)
                     response_bytes = await _read_bounded_raw_body(response)
 
-        return _normalise_results(json.loads(response_bytes))
+        return _normalise_results(
+            json.loads(
+                response_bytes,
+                parse_constant=_reject_non_standard_json_constant,
+            )
+        )
     except (
         AcquisitionFailure,
         httpx.HTTPError,
@@ -71,6 +76,11 @@ def _validate_content_encoding(response: httpx.Response) -> None:
         len(encodings) != 1 or encodings[0].strip(" \t").lower() != "identity"
     ):
         raise AcquisitionFailure()
+
+
+def _reject_non_standard_json_constant(_: str) -> object:
+    """Reject constants which are accepted by Python but are not JSON."""
+    raise AcquisitionFailure()
 
 
 def _normalise_results(payload: object) -> list[dict[str, str]]:
