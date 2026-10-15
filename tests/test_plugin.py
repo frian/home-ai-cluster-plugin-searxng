@@ -329,6 +329,70 @@ def test_invalid_json_or_structure_fails(
         run(plugin.acquire("query"))
 
 
+@pytest.mark.parametrize("initial_bom", [b"", b"\xef\xbb\xbf"])
+def test_utf8_json_with_or_without_initial_bom_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, initial_bom: bytes
+) -> None:
+    result = usable_result(title="Caf\u00e9", content="na\u00efve \u2615")
+    body = (
+        initial_bom
+        + json.dumps(
+            {
+                "results": [result],
+                "metadata": {"null": None, "flag": True, "score": 1.5},
+            },
+            ensure_ascii=False,
+        ).encode()
+    )
+    install_transport(monkeypatch, lambda request: httpx.Response(200, content=body))
+    assert run(plugin.acquire("query")) == [result]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"\xff\xfe" + json.dumps({"results": [usable_result()]}).encode("utf-16-le"),
+        b"\xfe\xff" + json.dumps({"results": [usable_result()]}).encode("utf-16-be"),
+        json.dumps({"results": [usable_result()]}).encode("utf-16-le"),
+        b"\xff\xfe\x00\x00"
+        + json.dumps({"results": [usable_result()]}).encode("utf-32-le"),
+        json.dumps({"results": [usable_result()]}).encode("utf-32-le"),
+        b'{"results":[{"title":"\xff","url":"https://example.invalid/",'
+        b'"content":"content"}]}',
+    ],
+)
+def test_unsupported_or_malformed_response_encodings_fail(
+    monkeypatch: pytest.MonkeyPatch, body: bytes
+) -> None:
+    install_transport(monkeypatch, lambda request: httpx.Response(200, content=body))
+    with pytest.raises(plugin.AcquisitionFailure):
+        run(plugin.acquire("query"))
+
+
+def test_response_decoding_failure_is_privacy_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = "private query"
+    sensitive_url = "https://sensitive.invalid/path"
+    sensitive_content = "private response"
+    body = (
+        b'{"results":[{"title":"\xff","url":"'
+        + sensitive_url.encode()
+        + b'","content":"'
+        + sensitive_content.encode()
+        + b'","metadata":{"private":"value"}}]}'
+    )
+    install_transport(monkeypatch, lambda request: httpx.Response(200, content=body))
+    with pytest.raises(plugin.AcquisitionFailure) as failure:
+        run(plugin.acquire(query))
+    message = str(failure.value)
+    assert message == "external information acquisition failed"
+    assert query not in message
+    assert sensitive_url not in message
+    assert sensitive_content not in message
+    assert "UnicodeDecodeError" not in message
+
+
 @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
 @pytest.mark.parametrize(
     ("location", "body_prefix", "body_suffix"),
