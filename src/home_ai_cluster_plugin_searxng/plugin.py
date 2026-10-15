@@ -33,11 +33,15 @@ async def acquire(query: str) -> list[dict[str, str]]:
                     "POST",
                     _ENDPOINT,
                     data={"q": query, "format": "json"},
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Accept-Encoding": "identity",
+                    },
                 ) as response:
                     if response.status_code != httpx.codes.OK:
                         raise AcquisitionFailure()
-                    response_bytes = await _read_bounded_decoded_body(response)
+                    _validate_content_encoding(response)
+                    response_bytes = await _read_bounded_raw_body(response)
 
         return _normalise_results(json.loads(response_bytes))
     except (
@@ -50,14 +54,21 @@ async def acquire(query: str) -> list[dict[str, str]]:
         raise AcquisitionFailure() from None
 
 
-async def _read_bounded_decoded_body(response: httpx.Response) -> bytes:
-    """Read decoded HTTPX stream data without exceeding the RFC byte bound."""
+async def _read_bounded_raw_body(response: httpx.Response) -> bytes:
+    """Read an identity-encoded HTTP body without exceeding the RFC byte bound."""
     accumulated = bytearray()
-    async for chunk in response.aiter_bytes():
+    async for chunk in response.aiter_raw():
         if len(accumulated) + len(chunk) > _MAX_DECODED_RESPONSE_BYTES:
             raise AcquisitionFailure()
         accumulated.extend(chunk)
     return bytes(accumulated)
+
+
+def _validate_content_encoding(response: httpx.Response) -> None:
+    """Accept only an absent or unambiguous identity content encoding."""
+    encodings = response.headers.get_list("content-encoding")
+    if encodings and (len(encodings) != 1 or encodings[0].lower() != "identity"):
+        raise AcquisitionFailure()
 
 
 def _normalise_results(payload: object) -> list[dict[str, str]]:

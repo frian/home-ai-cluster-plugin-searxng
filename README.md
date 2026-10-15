@@ -17,6 +17,17 @@ The SearXNG result URLs returned by this package are provenance data only. They
 are never fetched or otherwise used as network destinations. This first version
 has no configurable endpoint.
 
+## Response transport
+
+The plugin requests identity encoding and accepts only responses with no
+`Content-Encoding` declaration or one explicit `identity` declaration. It
+rejects compressed responses before reading their bodies, so HTTPX content
+decompression is not performed for accepted response bodies. This is an
+intentional compatibility change: a previously accepted compressed response,
+including a valid gzip response below the 1 MiB limit after decoding, now fails
+acquisition. The plugin still incrementally limits accepted raw response bodies
+to 1 MiB before JSON parsing; this does not claim a global process-memory bound.
+
 Installation only makes the `searxng` entry point available for the explicit
 Home AI Cluster external-information caller; it does not change ordinary HAC
 startup or requests.
