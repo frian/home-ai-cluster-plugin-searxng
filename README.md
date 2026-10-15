@@ -28,6 +28,10 @@ including a valid gzip response below the 1 MiB limit after decoding, now fails
 acquisition. The plugin still incrementally limits accepted raw response bodies
 to 1 MiB before JSON parsing; this does not claim a global process-memory bound.
 
+Response JSON is decoded strictly as UTF-8, while an initial UTF-8 BOM remains
+accepted for parser compatibility. UTF-16 and UTF-32 JSON responses are rejected
+even when their contents would otherwise be usable.
+
 Installation only makes the `searxng` entry point available for the explicit
 Home AI Cluster external-information caller; it does not change ordinary HAC
 startup or requests.

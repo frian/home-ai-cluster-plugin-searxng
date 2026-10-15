@@ -43,9 +43,10 @@ async def acquire(query: str) -> list[dict[str, str]]:
                     _validate_content_encoding(response)
                     response_bytes = await _read_bounded_raw_body(response)
 
+        payload = response_bytes.decode("utf-8-sig")
         return _normalise_results(
             json.loads(
-                response_bytes,
+                payload,
                 parse_constant=_reject_non_standard_json_constant,
             )
         )
