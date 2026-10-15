@@ -67,7 +67,9 @@ async def _read_bounded_raw_body(response: httpx.Response) -> bytes:
 def _validate_content_encoding(response: httpx.Response) -> None:
     """Accept only an absent or unambiguous identity content encoding."""
     encodings = response.headers.get_list("content-encoding")
-    if encodings and (len(encodings) != 1 or encodings[0].lower() != "identity"):
+    if encodings and (
+        len(encodings) != 1 or encodings[0].strip(" \t").lower() != "identity"
+    ):
         raise AcquisitionFailure()
 
 

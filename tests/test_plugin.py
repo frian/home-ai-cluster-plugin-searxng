@@ -256,8 +256,11 @@ def test_gzip_oversized_decoding_regression_is_rejected_without_reading(
         {"content-encoding": "deflate"},
         {"content-encoding": "br"},
         {"content-encoding": "unknown"},
+        {"content-encoding": "gzip "},
         {"content-encoding": "gzip, identity"},
         {"content-encoding": "identity, gzip"},
+        {"content-encoding": "identity, identity"},
+        {"content-encoding": "identity\t, gzip"},
         {"content-encoding": "gzip, deflate"},
         [("content-encoding", "identity"), ("content-encoding", "identity")],
     ],
@@ -273,7 +276,9 @@ def test_unsupported_or_ambiguous_content_encoding_is_rejected(
         run(plugin.acquire("query"))
 
 
-@pytest.mark.parametrize("encoding", [None, "identity", "IDENTITY"])
+@pytest.mark.parametrize(
+    "encoding", [None, "identity", "IDENTITY", "identity ", " identity", "identity\t"]
+)
 def test_absent_or_identity_content_encoding_is_accepted(
     monkeypatch: pytest.MonkeyPatch, encoding: str | None
 ) -> None:
